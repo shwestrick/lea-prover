@@ -13,7 +13,9 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import signal
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -57,6 +59,7 @@ class LeanDaemon:
                 cwd=self.lake_root,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 bufsize=0,
+                start_new_session=True,  # own process group so we can kill workers too
             )
         except FileNotFoundError:
             return False
@@ -142,6 +145,7 @@ class LeanDaemon:
         t0 = time.time()
         last_diags = None
         saw_progress_empty = False
+        last_heartbeat = t0
         while time.time() - t0 < _CHECK_TIMEOUT:
             try:
                 m = self.queue.get(timeout=2)
@@ -149,6 +153,10 @@ class LeanDaemon:
                 if self.proc.poll() is not None:
                     self.broken = True
                     raise RuntimeError(f"server exited (code {self.proc.returncode})")
+                now = time.time()
+                if progress_cb and now - last_heartbeat >= 5:
+                    last_heartbeat = now
+                    progress_cb(f"waiting… ({now - t0:.0f}s)")
                 continue
             if m is None:
                 self.broken = True
@@ -175,6 +183,7 @@ class LeanDaemon:
                         for r in processing
                     ) + 1  # 1-indexed
                     progress_cb(f"elaborating line {frontier}…")
+        self.broken = True
         raise RuntimeError(f"daemon timeout after {_CHECK_TIMEOUT}s")
 
     def _drain_followups(self, uri: str, current: list) -> list:
@@ -202,10 +211,16 @@ class LeanDaemon:
             self._send({"jsonrpc": "2.0", "method": "exit"})
             self.proc.wait(timeout=5)
         except Exception:
+            pass
+        finally:
+            # Kill the entire process group to clean up lean --worker children.
             try:
-                self.proc.kill()
+                os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
             except Exception:
-                pass
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
         self.proc = None
         self.broken = True
 
@@ -219,27 +234,31 @@ class LeanDaemon:
         self.proc.stdin.flush()
 
     def _reader(self):
-        stream = self.proc.stdout
-        while True:
-            headers = {}
+        try:
+            stream = self.proc.stdout
             while True:
-                line = stream.readline()
-                if not line:
-                    self.queue.put(None)
-                    return
-                s = line.decode("utf-8", errors="replace").strip()
-                if s == "":
-                    break
-                k, _, v = s.partition(":")
-                headers[k.strip().lower()] = v.strip()
-            n = int(headers.get("content-length", 0))
-            if n == 0:
-                continue
-            body = stream.read(n).decode("utf-8", errors="replace")
-            try:
-                self.queue.put(json.loads(body))
-            except json.JSONDecodeError:
-                pass
+                headers = {}
+                while True:
+                    line = stream.readline()
+                    if not line:
+                        self.queue.put(None)
+                        return
+                    s = line.decode("utf-8", errors="replace").strip()
+                    if s == "":
+                        break
+                    k, _, v = s.partition(":")
+                    headers[k.strip().lower()] = v.strip()
+                n = int(headers.get("content-length", 0))
+                if n == 0:
+                    continue
+                body = stream.read(n).decode("utf-8", errors="replace")
+                try:
+                    self.queue.put(json.loads(body))
+                except json.JSONDecodeError:
+                    pass
+        except Exception as e:
+            print(f"  [lean-lsp] _reader crashed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+            self.queue.put(None)
 
     def _drain_stderr(self):
         for _ in iter(self.proc.stderr.readline, b""):
@@ -282,6 +301,8 @@ def check_via_lsp(file_path: str, content: str, lake_root: str, progress_cb=None
             del _daemons[lake_root]
             d = None
         if d is None:
+            if progress_cb:
+                progress_cb("starting LSP daemon…")
             d = LeanDaemon(lake_root)
             if not d.start():
                 raise RuntimeError(f"failed to start lean --server in {lake_root}")
