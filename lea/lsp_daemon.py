@@ -22,6 +22,12 @@ from pathlib import Path
 from queue import Queue, Empty
 
 
+_DEBUG = bool(os.environ.get("LEA_LSP_DEBUG"))
+
+def _dbg(msg: str):
+    if _DEBUG:
+        print(f"  [lean-lsp] {msg}", file=sys.stderr, flush=True)
+
 # Restart a daemon after this many checks. Bounds memory growth from Lean's
 # per-document elaboration cache. Tunable via env var.
 _RESTART_AFTER = int(os.environ.get("LEA_LSP_RESTART_AFTER", "500"))
@@ -104,6 +110,7 @@ class LeanDaemon:
             raise RuntimeError("daemon not alive")
 
         uri = Path(file_path).as_uri()
+        _dbg(f"check: waiting for uri={uri}")
         version = self.calls + 1
         self.calls += 1
 
@@ -230,6 +237,8 @@ class LeanDaemon:
         return self.next_id
 
     def _send(self, msg: dict):
+        method = msg.get("method", f"response(id={msg.get('id')})")
+        _dbg(f"send: {method}")
         self.proc.stdin.write(_encode(msg))
         self.proc.stdin.flush()
 
@@ -241,6 +250,7 @@ class LeanDaemon:
                 while True:
                     line = stream.readline()
                     if not line:
+                        _dbg("recv: EOF")
                         self.queue.put(None)
                         return
                     s = line.decode("utf-8", errors="replace").strip()
@@ -253,9 +263,14 @@ class LeanDaemon:
                     continue
                 body = stream.read(n).decode("utf-8", errors="replace")
                 try:
-                    self.queue.put(json.loads(body))
-                except json.JSONDecodeError:
-                    pass
+                    parsed = json.loads(body)
+                    method = parsed.get("method", f"response(id={parsed.get('id')})")
+                    uri = (parsed.get("params") or {}).get("uri") or \
+                          ((parsed.get("params") or {}).get("textDocument") or {}).get("uri", "")
+                    _dbg(f"recv: {method}{f'  uri={uri}' if uri else ''}")
+                    self.queue.put(parsed)
+                except json.JSONDecodeError as e:
+                    print(f"  [lean-lsp] _reader: JSON decode error (len={n}): {e}", file=sys.stderr, flush=True)
         except Exception as e:
             print(f"  [lean-lsp] _reader crashed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
             self.queue.put(None)
