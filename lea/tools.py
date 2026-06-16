@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -156,9 +157,14 @@ def lean_check(path: str) -> str:
     if lake_root and not os.environ.get("LEA_DISABLE_LSP"):
         try:
             from lea.lsp_daemon import check_via_lsp
-            return check_via_lsp(str(p), p.read_text(), lake_root)
-        except Exception:
-            pass  # fall through to subprocess
+            _last = [None]
+            def _progress(msg):
+                if msg != _last[0]:
+                    _last[0] = msg
+                    print(f"  [lean] {msg}", file=sys.stderr, flush=True)
+            return check_via_lsp(str(p), p.read_text(), lake_root, progress_cb=_progress)
+        except Exception as e:
+            print(f"  [lean_check] LSP error ({type(e).__name__}: {e}), falling back to subprocess…", file=sys.stderr, flush=True)
 
     if lake_root:
         cmd = ["lake", "env", "lean", str(p)]

@@ -91,8 +91,12 @@ class LeanDaemon:
         except (BrokenPipeError, OSError):
             return False
 
-    def check(self, file_path: str, content: str) -> str:
-        """Open or update a file with `content`, wait for diagnostics, return them."""
+    def check(self, file_path: str, content: str, progress_cb=None) -> str:
+        """Open or update a file with `content`, wait for diagnostics, return them.
+
+        progress_cb: optional callable(str) called with a human-readable message
+        each time Lean reports a new elaboration frontier via $/lean/fileProgress.
+        """
         if self.broken or self.proc is None:
             raise RuntimeError("daemon not alive")
 
@@ -160,10 +164,17 @@ class LeanDaemon:
                 if saw_progress_empty or len(last_diags) > 0:
                     return self._format(file_path, self._drain_followups(uri, last_diags))
             elif method == "$/lean/fileProgress" and params.get("textDocument", {}).get("uri") == uri:
-                if not params.get("processing"):
+                processing = params.get("processing", [])
+                if not processing:
                     saw_progress_empty = True
                     if last_diags is not None:
                         return self._format(file_path, self._drain_followups(uri, last_diags))
+                elif progress_cb:
+                    frontier = min(
+                        r.get("range", {}).get("start", {}).get("line", 0)
+                        for r in processing
+                    ) + 1  # 1-indexed
+                    progress_cb(f"elaborating line {frontier}…")
         raise RuntimeError(f"daemon timeout after {_CHECK_TIMEOUT}s")
 
     def _drain_followups(self, uri: str, current: list) -> list:
@@ -258,10 +269,11 @@ _daemons: dict[str, LeanDaemon] = {}
 _lock = threading.Lock()
 
 
-def check_via_lsp(file_path: str, content: str, lake_root: str) -> str:
+def check_via_lsp(file_path: str, content: str, lake_root: str, progress_cb=None) -> str:
     """Run `lean_check` via the persistent LSP daemon for `lake_root`.
 
     Raises on any failure so the caller can fall back to subprocess.
+    progress_cb: optional callable(str) forwarded to LeanDaemon.check().
     """
     with _lock:
         d = _daemons.get(lake_root)
@@ -274,7 +286,7 @@ def check_via_lsp(file_path: str, content: str, lake_root: str) -> str:
             if not d.start():
                 raise RuntimeError(f"failed to start lean --server in {lake_root}")
             _daemons[lake_root] = d
-    return d.check(file_path, content)
+    return d.check(file_path, content, progress_cb=progress_cb)
 
 
 @atexit.register
