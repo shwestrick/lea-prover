@@ -188,10 +188,10 @@ def lean_check(path: str) -> str:
         return "Error: `lean` or `lake` not found. Is Lean 4 installed?"
 
 
-def bash(command: str, timeout: int = 120) -> str:
+def bash(command: str, timeout: int = 120, cwd: str | None = None) -> str:
     try:
         result = subprocess.run(
-            command, shell=True, capture_output=True, text=True, timeout=timeout
+            command, shell=True, capture_output=True, text=True, timeout=timeout, cwd=cwd
         )
         output = (result.stdout + result.stderr).strip()
         if not output:
@@ -278,23 +278,36 @@ def search_mathlib(query: str, max_results: int = 10, path: str | None = None, d
 
 
 def make_tool_handlers(workspace: Path | None = None) -> dict:
-    """Return a tool dispatch table, optionally binding a custom workspace for search_mathlib.
+    """Return a tool dispatch table, optionally binding a custom workspace.
 
-    workspace is the directory where the agent writes .lean files. The Lake root for
-    Mathlib search is derived from it by walking up to find a lakefile.
+    workspace is the directory where the agent writes .lean files. When set:
+    - bash runs with workspace as cwd by default
+    - relative paths in file/lean_check tools are resolved against workspace
+    - search_mathlib uses the Lake project that contains workspace
     """
     mathlib_workspace: Path | None = None
+    bash_cwd: str | None = None
     if workspace is not None:
         lake_root_str = _find_lake_root(str(workspace))
         mathlib_workspace = Path(lake_root_str) if lake_root_str else workspace
+        bash_cwd = str(workspace)
+
+    def _resolve(path: str) -> str:
+        """Resolve path relative to workspace when not absolute."""
+        if workspace is not None and not Path(path).expanduser().is_absolute():
+            return str(workspace / path)
+        return path
+
     return {
-        "bash": lambda args: bash(args["command"], args.get("timeout", 120)),
-        "read_file": lambda args: read_file(args["path"], args.get("start_line"), args.get("end_line")),
-        "write_file": lambda args: write_file(args["path"], args["content"]),
-        "edit_file": lambda args: edit_file(args["path"], args["old_string"], args["new_string"]),
-        "lean_check": lambda args: lean_check(args["path"]),
+        "bash": lambda args: bash(args["command"], args.get("timeout", 120), cwd=bash_cwd),
+        "read_file": lambda args: read_file(_resolve(args["path"]), args.get("start_line"), args.get("end_line")),
+        "write_file": lambda args: write_file(_resolve(args["path"]), args["content"]),
+        "edit_file": lambda args: edit_file(_resolve(args["path"]), args["old_string"], args["new_string"]),
+        "lean_check": lambda args: lean_check(_resolve(args["path"])),
         "search_mathlib": lambda args: search_mathlib(
-            args["query"], args.get("max_results", 10), args.get("path"), mathlib_workspace
+            args["query"], args.get("max_results", 10),
+            _resolve(args["path"]) if args.get("path") else None,
+            mathlib_workspace,
         ),
     }
 
