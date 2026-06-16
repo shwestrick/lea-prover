@@ -100,9 +100,11 @@ TOOLS_SCHEMA = [
 def _find_lake_root(path: str) -> str | None:
     """Walk up from path looking for lakefile.lean or lakefile.toml."""
     p = Path(path).resolve()
-    for parent in [p.parent, *p.parent.parents]:
-        if (parent / "lakefile.lean").exists() or (parent / "lakefile.toml").exists():
-            return str(parent)
+    # If p is a directory, include it. Otherwise, default to just its parents.
+    search_dirs = [p, *p.parents] if p.is_dir() else p.parents
+    for directory in search_dirs:
+        if (directory / "lakefile.lean").exists() or (directory / "lakefile.toml").exists():
+            return str(directory)
     return None
 
 
