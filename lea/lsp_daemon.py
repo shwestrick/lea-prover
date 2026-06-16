@@ -64,7 +64,6 @@ class LeanDaemon:
                 ["lake", "env", "lean", "--server"],
                 cwd=self.lake_root,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                bufsize=0,
                 start_new_session=True,  # own process group so we can kill workers too
             )
         except FileNotFoundError:
