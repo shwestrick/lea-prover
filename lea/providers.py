@@ -136,7 +136,10 @@ def _stream_gemini(model, system, messages, tools):
     for chunk in client.models.generate_content_stream(model=model, contents=contents, config=config):
         if chunk.usage_metadata:
             usage.input_tokens = chunk.usage_metadata.prompt_token_count or 0
-            usage.output_tokens = chunk.usage_metadata.candidates_token_count or 0
+            usage.output_tokens = (
+                (chunk.usage_metadata.candidates_token_count or 0)
+                + (chunk.usage_metadata.thoughts_token_count or 0)
+            )
         if not chunk.candidates:
             continue
         for part in chunk.candidates[0].content.parts:
