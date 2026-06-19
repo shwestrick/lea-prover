@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .agent import run, list_sessions, DEFAULT_MODEL
 from .prompt import DEFAULT_WORKSPACE
+from .tools import _find_lake_root
 
 
 def main():
@@ -53,6 +54,14 @@ def main():
         "--tools-only", action="store_true",
         help="Like --bare-prompt but with tools available.",
     )
+    parser.add_argument(
+        "--sandbox", action="store_true",
+        help="Run bash and lean_check inside a Docker container (no network access).",
+    )
+    parser.add_argument(
+        "--docker-image", default=None, metavar="IMAGE",
+        help="Docker image to use with --sandbox. Must have lean and lake available.",
+    )
 
     args = parser.parse_args()
 
@@ -79,17 +88,40 @@ def main():
     else:
         variant = "default"
 
-    result = run(
-        task=task or "",
-        model=args.model,
-        max_turns=args.max_turns,
-        provider=args.provider,
-        resume=args.resume,
-        prompt_variant=variant,
-        workspace=args.workspace,
-        bare_prompt=args.bare_prompt,
-        tools_only=args.tools_only,
-    )
+    if args.sandbox:
+        if not args.docker_image:
+            print("Error: --docker-image is required when using --sandbox.", file=sys.stderr)
+            sys.exit(1)
+        from .sandbox import DockerSandbox
+        ws = args.workspace or DEFAULT_WORKSPACE
+        lake_root_str = _find_lake_root(str(ws))
+        mount_path = Path(lake_root_str) if lake_root_str else ws
+        print(f"sandbox:    {args.docker_image} (mount: {mount_path})", flush=True)
+        with DockerSandbox(mount_path, args.docker_image) as sandbox:
+            result = run(
+                task=task or "",
+                model=args.model,
+                max_turns=args.max_turns,
+                provider=args.provider,
+                resume=args.resume,
+                prompt_variant=variant,
+                workspace=args.workspace,
+                bare_prompt=args.bare_prompt,
+                tools_only=args.tools_only,
+                sandbox=sandbox,
+            )
+    else:
+        result = run(
+            task=task or "",
+            model=args.model,
+            max_turns=args.max_turns,
+            provider=args.provider,
+            resume=args.resume,
+            prompt_variant=variant,
+            workspace=args.workspace,
+            bare_prompt=args.bare_prompt,
+            tools_only=args.tools_only,
+        )
     print(result)
 
 

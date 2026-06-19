@@ -108,6 +108,7 @@ def run(
     workspace: Path | None = None,
     bare_prompt: bool = False,
     tools_only: bool = False,
+    sandbox=None,
 ) -> str | tuple[str, dict]:
     """Run the agent on a formalization task.
 
@@ -116,6 +117,7 @@ def run(
     workspace: Lake project root to use instead of the bundled workspace/.
     bare_prompt: if True, send the task as the entire prompt with no system prompt and no tools.
     tools_only: like bare_prompt but with tools available.
+    sandbox: optional DockerSandbox; when set, bash and lean_check run inside the container.
     """
     if bare_prompt:
         system = ""
@@ -124,11 +126,11 @@ def run(
     elif tools_only:
         system = ""
         tools_schema = TOOLS_SCHEMA
-        tool_handlers = make_tool_handlers(workspace)
+        tool_handlers = make_tool_handlers(workspace, sandbox=sandbox)
     else:
         system = load_system_prompt(prompt_variant, workspace=workspace)
         tools_schema = TOOLS_SCHEMA
-        tool_handlers = make_tool_handlers(workspace)
+        tool_handlers = make_tool_handlers(workspace, sandbox=sandbox)
 
     if resume:
         session_id_to_load = resume if isinstance(resume, str) else None

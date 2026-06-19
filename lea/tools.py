@@ -1,6 +1,8 @@
 """Lea's six tools — the minimum surface area for Lean formalization."""
 
+import base64
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -277,13 +279,55 @@ def search_mathlib(query: str, max_results: int = 10, path: str | None = None, d
         return "Error: search timed out."
 
 
-def make_tool_handlers(workspace: Path | None = None) -> dict:
+def sandbox_read_file(sandbox, path: Path, start_line: int | None, end_line: int | None) -> str:
+    data = sandbox.read_file(str(path))
+    if data is None:
+        return f"Error: {path} does not exist."
+    text = data.decode("utf-8", errors="replace")
+    if start_line is None and end_line is None:
+        return text
+    lines = text.splitlines(keepends=True)
+    s = max(0, (start_line or 1) - 1)
+    e = end_line if end_line is not None else len(lines)
+    sliced = "".join(lines[s:e])
+    header = f"# lines {s + 1}-{min(e, len(lines))} of {len(lines)} in {path}\n"
+    return header + sliced
+
+
+def sandbox_write_file(sandbox, path: Path, content: str) -> str:
+    parent_q = shlex.quote(str(path.parent))
+    dest_q = shlex.quote(str(path))
+    encoded = base64.b64encode(content.encode("utf-8"))
+    out = sandbox.exec(
+        f"mkdir -p {parent_q} && base64 -d > {dest_q} && echo OK",
+        stdin=encoded,
+    )
+    return f"Wrote {len(content)} bytes to {path}" if out == "OK" else out
+
+
+def sandbox_edit_file(sandbox, path: Path, old_string: str, new_string: str) -> str:
+    if not path.exists():
+        return f"Error: {path} does not exist."
+    text = path.read_text()
+    count = text.count(old_string)
+    if count == 0:
+        return "Error: old_string not found in file."
+    if count > 1:
+        return f"Error: old_string appears {count} times. Provide more context to make it unique."
+    return sandbox_write_file(sandbox, path, text.replace(old_string, new_string, 1))
+
+
+def make_tool_handlers(workspace: Path | None = None, sandbox=None) -> dict:
     """Return a tool dispatch table, optionally binding a custom workspace.
 
     workspace is the directory where the agent writes .lean files. When set:
     - bash runs with workspace as cwd by default
     - relative paths in file/lean_check tools are resolved against workspace
     - search_mathlib uses the Lake project that contains workspace
+
+    sandbox: optional DockerSandbox. When set, bash/write_file/edit_file are
+    routed through the container so mutations are confined to the mounted
+    directory. read_file, lean_check, and search_mathlib remain host-side.
     """
     mathlib_workspace: Path | None = None
     bash_cwd: str | None = None
@@ -298,7 +342,7 @@ def make_tool_handlers(workspace: Path | None = None) -> dict:
             return str(workspace / path)
         return path
 
-    return {
+    handlers = {
         "bash": lambda args: bash(args["command"], args.get("timeout", 120), cwd=bash_cwd),
         "read_file": lambda args: read_file(_resolve(args["path"]), args.get("start_line"), args.get("end_line")),
         "write_file": lambda args: write_file(_resolve(args["path"]), args["content"]),
@@ -310,6 +354,12 @@ def make_tool_handlers(workspace: Path | None = None) -> dict:
             mathlib_workspace,
         ),
     }
+    if sandbox is not None:
+        handlers["bash"] = lambda args: sandbox.exec(args["command"], cwd=bash_cwd, timeout=args.get("timeout", 120))
+        handlers["read_file"] = lambda args: sandbox_read_file(sandbox, Path(_resolve(args["path"])).resolve(), args.get("start_line"), args.get("end_line"))
+        handlers["write_file"] = lambda args: sandbox_write_file(sandbox, Path(_resolve(args["path"])).resolve(), args["content"])
+        handlers["edit_file"] = lambda args: sandbox_edit_file(sandbox, Path(_resolve(args["path"])).resolve(), args["old_string"], args["new_string"])
+    return handlers
 
 
 # Dispatch table (default workspace)
