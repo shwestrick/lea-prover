@@ -42,6 +42,30 @@ def detect_provider(model: str) -> str:
     raise ValueError(f"Can't detect provider for model '{model}'. Use -p to specify.")
 
 
+def get_context_limit(model: str, provider: str) -> int | None:
+    """Fetch the input token limit for the model from the provider API.
+
+    Returns None if unavailable or the call fails.
+    """
+    try:
+        if provider == "gemini":
+            from google import genai
+            client = genai.Client(api_key=os.environ["GOOGLE_API_KEY"])
+            info = client.models.get(model=model)
+            return info.input_token_limit
+        elif provider == "anthropic":
+            import anthropic
+            client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+            info = client.models.retrieve(model)
+            return info.context_window
+        elif provider == "openai":
+            # OpenAI does not expose context window size via the models API
+            return None
+    except Exception:
+        return None
+    return None
+
+
 def stream(model: str, system: str, messages: list, tools: list, provider: str | None = None):
     """Yield TextDelta, ToolCall, and Done events from the model.
 

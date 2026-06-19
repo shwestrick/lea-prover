@@ -8,7 +8,7 @@ from pathlib import Path
 from pathlib import Path
 
 from .prompt import load_system_prompt
-from .providers import stream, detect_provider, TextDelta, ToolCall, Done, _ToolMeta, Usage
+from .providers import stream, detect_provider, get_context_limit, TextDelta, ToolCall, Done, _ToolMeta, Usage
 from .tools import TOOLS_SCHEMA, make_tool_handlers
 
 SESSIONS_DIR = Path.home() / ".lea" / "sessions"
@@ -34,7 +34,7 @@ MODEL_PRICING = {
 DEFAULT_PRICING = (2.0, 10.0)
 
 
-def _save_session(session_id: str, model: str, messages: list, usage: Usage):
+def _save_session(session_id: str, model: str, messages: list, usage: Usage, error: str | None = None):
     """Persist conversation to disk."""
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
     path = SESSIONS_DIR / f"{session_id}.json"
@@ -56,6 +56,8 @@ def _save_session(session_id: str, model: str, messages: list, usage: Usage):
         "usage": {"input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens},
         "messages": clean_messages,
     }
+    if error is not None:
+        data["error"] = error
     path.write_text(json.dumps(data, indent=2))
 
 
@@ -148,12 +150,15 @@ def run(
         total_usage = Usage()
 
     provider_name = provider or detect_provider(model)
+    ctx_limit = get_context_limit(model, provider_name)
 
     from .prompt import DEFAULT_WORKSPACE
     ws = workspace or DEFAULT_WORKSPACE
     print(f"workspace:  {ws}", flush=True)
     print(f"model:      {model}", flush=True)
     print(f"provider:   {provider_name}", flush=True)
+    if ctx_limit is not None:
+        print(f"ctx_limit:  {ctx_limit:,} tokens", flush=True)
     if bare_prompt:
         variant_label = "bare"
     elif tools_only:
@@ -200,25 +205,38 @@ def run(
         assistant_parts = []  # list of {"type": "text"/"tool_call", ...}
         current_text = ""
         tool_calls = []  # list of (name, args, id_or_none)
+        turn_input_tokens = 0
 
-        for event in stream(model, system, messages, tools_schema, provider_name):
-            if isinstance(event, TextDelta):
-                sys.stdout.write(event.text)
-                sys.stdout.flush()
-                current_text += event.text
-            elif isinstance(event, ToolCall):
-                if current_text:
-                    assistant_parts.append({"type": "text", "text": current_text})
-                    current_text = ""
-                print(f"\n  -> {event.name}({event.args})", flush=True)
-                tool_calls.append({"name": event.name, "args": event.args, "id": None, "raw_part": event.raw_part})
-            elif isinstance(event, _ToolMeta):
-                # Attach the provider-specific ID to the last tool call
-                if tool_calls:
-                    tool_calls[-1]["id"] = event.tool_use_id
-            elif isinstance(event, Done):
-                total_usage.input_tokens += event.usage.input_tokens
-                total_usage.output_tokens += event.usage.output_tokens
+        try:
+            for event in stream(model, system, messages, tools_schema, provider_name):
+                if isinstance(event, TextDelta):
+                    sys.stdout.write(event.text)
+                    sys.stdout.flush()
+                    current_text += event.text
+                elif isinstance(event, ToolCall):
+                    if current_text:
+                        assistant_parts.append({"type": "text", "text": current_text})
+                        current_text = ""
+                    print(f"\n  -> {event.name}({event.args})", flush=True)
+                    tool_calls.append({"name": event.name, "args": event.args, "id": None, "raw_part": event.raw_part})
+                elif isinstance(event, _ToolMeta):
+                    # Attach the provider-specific ID to the last tool call
+                    if tool_calls:
+                        tool_calls[-1]["id"] = event.tool_use_id
+                elif isinstance(event, Done):
+                    turn_input_tokens = event.usage.input_tokens
+                    total_usage.input_tokens += event.usage.input_tokens
+                    total_usage.output_tokens += event.usage.output_tokens
+        except Exception as e:
+            print(f"\nException during turn {turn}: {e}", flush=True)
+            _save_session(session_id, model, messages, total_usage, error=f"{type(e).__name__}: {e}")
+            _print_usage(model, turn, total_usage)
+            raise
+
+        if ctx_limit is not None:
+            print(f"\n  [context: {turn_input_tokens:,} / {ctx_limit:,} tokens]", flush=True)
+        else:
+            print(f"\n  [context: {turn_input_tokens:,} tokens]", flush=True)
 
         if current_text:
             assistant_parts.append({"type": "text", "text": current_text})
