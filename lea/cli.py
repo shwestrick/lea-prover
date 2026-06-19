@@ -45,6 +45,14 @@ def main():
         help=f"Directory where the agent writes .lean files (default: {DEFAULT_WORKSPACE}). "
              "The Lake project root is inferred automatically for Mathlib search.",
     )
+    parser.add_argument(
+        "--bare-prompt", action="store_true",
+        help="Send the prompt exactly as given, with no system prompt and no tools.",
+    )
+    parser.add_argument(
+        "--tools-only", action="store_true",
+        help="Like --bare-prompt but with tools available.",
+    )
 
     args = parser.parse_args()
 
@@ -79,6 +87,8 @@ def main():
         resume=args.resume,
         prompt_variant=variant,
         workspace=args.workspace,
+        bare_prompt=args.bare_prompt,
+        tools_only=args.tools_only,
     )
     print(result)
 

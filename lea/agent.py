@@ -104,15 +104,29 @@ def run(
     return_transcript: bool = False,
     prompt_variant: str = "default",
     workspace: Path | None = None,
+    bare_prompt: bool = False,
+    tools_only: bool = False,
 ) -> str | tuple[str, dict]:
     """Run the agent on a formalization task.
 
     Returns the final assistant message, or (message, transcript_dict) if
     return_transcript is True.
     workspace: Lake project root to use instead of the bundled workspace/.
+    bare_prompt: if True, send the task as the entire prompt with no system prompt and no tools.
+    tools_only: like bare_prompt but with tools available.
     """
-    system = load_system_prompt(prompt_variant, workspace=workspace)
-    tool_handlers = make_tool_handlers(workspace)
+    if bare_prompt:
+        system = ""
+        tools_schema = []
+        tool_handlers = {}
+    elif tools_only:
+        system = ""
+        tools_schema = TOOLS_SCHEMA
+        tool_handlers = make_tool_handlers(workspace)
+    else:
+        system = load_system_prompt(prompt_variant, workspace=workspace)
+        tools_schema = TOOLS_SCHEMA
+        tool_handlers = make_tool_handlers(workspace)
 
     if resume:
         session_id_to_load = resume if isinstance(resume, str) else None
@@ -140,7 +154,13 @@ def run(
     print(f"workspace:  {ws}", flush=True)
     print(f"model:      {model}", flush=True)
     print(f"provider:   {provider_name}", flush=True)
-    print(f"variant:    {prompt_variant}", flush=True)
+    if bare_prompt:
+        variant_label = "bare"
+    elif tools_only:
+        variant_label = "tools-only"
+    else:
+        variant_label = prompt_variant
+    print(f"variant:    {variant_label}", flush=True)
     print(f"max_turns:  {max_turns if max_turns is not None else 'unlimited'}", flush=True)
     print(f"session:    {session_id}", flush=True)
 
@@ -181,7 +201,7 @@ def run(
         current_text = ""
         tool_calls = []  # list of (name, args, id_or_none)
 
-        for event in stream(model, system, messages, TOOLS_SCHEMA, provider_name):
+        for event in stream(model, system, messages, tools_schema, provider_name):
             if isinstance(event, TextDelta):
                 sys.stdout.write(event.text)
                 sys.stdout.flush()
