@@ -62,6 +62,10 @@ def main():
         "--docker-image", default=None, metavar="IMAGE",
         help="Docker image to use with --sandbox. Must have lean and lake available.",
     )
+    parser.add_argument(
+        "--sudo-docker", action="store_true",
+        help="Invoke docker commands via sudo (for systems where docker requires root).",
+    )
 
     args = parser.parse_args()
 
@@ -97,7 +101,7 @@ def main():
         lake_root_str = _find_lake_root(str(ws))
         mount_path = Path(lake_root_str) if lake_root_str else ws
         print(f"sandbox:    {args.docker_image} (mount: {mount_path})", flush=True)
-        with DockerSandbox(mount_path, args.docker_image) as sandbox:
+        with DockerSandbox(mount_path, args.docker_image, use_sudo=args.sudo_docker) as sandbox:
             result = run(
                 task=task or "",
                 model=args.model,

@@ -17,34 +17,46 @@ class DockerSandbox:
             output = sb.exec("lake build", cwd="/path/to/project")
     """
 
-    def __init__(self, mount_path: Path, image: str):
+    def __init__(self, mount_path: Path, image: str, use_sudo: bool = False):
         self.mount_path = mount_path.resolve()
         self.image = image
+        self.use_sudo = use_sudo
         self.container_id: str | None = None
+
+    def _docker(self, *args) -> list[str]:
+        prefix = ["sudo"] if self.use_sudo else []
+        return prefix + ["docker"] + list(args)
 
     def start(self) -> "DockerSandbox":
         mp = str(self.mount_path)
         result = subprocess.run(
-            [
-                "docker", "run",
+            self._docker("run",
                 "--detach",
                 "--rm",           # auto-remove on stop
                 "--network=none",
                 "-v", f"{mp}:{mp}",
                 self.image,
                 "sleep", "infinity",
-            ],
+            ),
             capture_output=True,
             text=True,
         )
         if result.returncode != 0:
-            raise RuntimeError(f"Failed to start Docker container: {result.stderr.strip()}")
+            stderr = result.stderr.strip()
+            if "permission denied" in stderr.lower():
+                raise RuntimeError(
+                    "Docker permission denied. Re-run with --sudo to have lea invoke "
+                    "docker commands via sudo, or add your user to the docker group:\n"
+                    "    sudo usermod -aG docker $USER   (then log out and back in)\n"
+                    f"Docker said: {stderr}"
+                )
+            raise RuntimeError(f"Failed to start Docker container: {stderr}")
         self.container_id = result.stdout.strip()
         return self
 
     def stop(self):
         if self.container_id:
-            subprocess.run(["docker", "stop", self.container_id], capture_output=True)
+            subprocess.run(self._docker("stop", self.container_id), capture_output=True)
             self.container_id = None
 
     def exec(self, command: str, cwd: str | None = None, timeout: int = 120, stdin: bytes | None = None) -> str:
@@ -52,7 +64,7 @@ class DockerSandbox:
         if not self.container_id:
             raise RuntimeError("Sandbox not started. Call start() first.")
 
-        exec_cmd = ["docker", "exec"]
+        exec_cmd = self._docker("exec")
         if stdin is not None:
             exec_cmd += ["-i"]
         if cwd:
@@ -79,7 +91,7 @@ class DockerSandbox:
     def read_file(self, path: str) -> bytes | None:
         """Read a file from inside the container. Returns None if it doesn't exist or isn't accessible."""
         result = subprocess.run(
-            ["docker", "exec", self.container_id, "cat", path],
+            self._docker("exec", self.container_id, "cat", path),
             capture_output=True,
             stdin=subprocess.DEVNULL,
         )
